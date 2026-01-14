@@ -1,0 +1,125 @@
+# =====================================================
+# STM32CubeIDE / Eclipse CDT Project .gitignore
+# =====================================================
+
+# Build outputs
+/Debug/
+/Release/
+/build/
+*.o
+*.d
+*.elf
+*.bin
+*.hex
+*.map
+*.list
+*.srec
+
+# Eclipse IDE files (optional - some prefer to track these)
+# Uncomment the following lines if you DON'T want to track IDE settings
+# /.settings/
+# /.cproject
+# /.project
+
+# Eclipse metadata that should NOT be tracked
+*.pydevproject
+.metadata/
+.recommenders/
+.cache/
+.buildpath
+
+# STM32CubeIDE specific
+*.launch
+*.log
+/RemoteSystemsTempFiles/
+/STM32CubeIDE/
+*.ioc.bak
+
+# Compiled firmware (track these separately if needed)
+*.bin
+
+# Backup files
+*~
+*.bak
+*.swp
+*.swo
+*#
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# VS Code (if using alongside CubeIDE)
+.vscode/
+*.code-workspace
+
+# JetBrains IDEs
+.idea/
+*.iml
+
+# Python bytecode (if using Python scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.egg-info/
+.eggs/
+
+# Documentation build output
+/docs/_build/
+/doc/html/
+/doc/latex/
+
+# Test outputs
+/test_results/
+*.gcov
+*.gcda
+*.gcno
+
+# Package manager directories
+node_modules/
+
+# Archives
+*.7z
+*.zip
+*.tar.gz
+*.rar
+
+# Large binary files (track separately with Git LFS if needed)
+*.a
+*.lib
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Logs
+logs/
+*.log
+
+# User-specific settings (if using launch configurations)
+*.launch
+
+# Core dumps
+core
+core.*
+
+# =====================================================
+# Files to KEEP (do not ignore these)
+# =====================================================
+# The following are important for project sharing:
+# - *.ioc          (STM32CubeMX configuration)
+# - *.c, *.h       (Source files)
+# - *.s, *.S       (Assembly files)
+# - *.ld           (Linker scripts)
+# - Makefile       (If using Makefile builds)
+# - .project       (Eclipse project file)
+# - .cproject      (Eclipse C project settings)
+# - .settings/     (Eclipse workspace settings)
