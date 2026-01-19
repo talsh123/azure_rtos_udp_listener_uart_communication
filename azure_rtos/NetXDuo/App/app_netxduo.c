@@ -40,7 +40,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define DEFAULT_MEMORY_SIZE       1024
+#define LINK_PRIORITY             11
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -53,6 +54,21 @@ TX_THREAD      NxAppThread;
 NX_PACKET_POOL NxAppPool;
 NX_IP          NetXDuoEthIpInstance;
 /* USER CODE BEGIN PV */
+/* TCP Echo Server variables */
+NX_TCP_SOCKET TCPSocket;
+#define TCP_ECHO_PORT 7
+#define TCP_WINDOW_SIZE 512
+
+/* External UART functions from main.c */
+extern volatile uint8_t uart_data_ready;
+extern uint16_t UART_GetData(uint8_t *buffer, uint16_t max_len);
+extern uint8_t UART_DataAvailable(void);
+
+/* Thread for TCP Echo */
+TX_THREAD TcpEchoThread;
+
+/* Buffer for data */
+static uint8_t echo_buffer[512];
 /* Define Threadx global data structures. */
 TX_THREAD AppServerThread;
 TX_THREAD LedThread;
@@ -79,7 +95,6 @@ __attribute__((section(".NxServerPoolSection")))
 #elif defined ( __GNUC__ ) /* GNU Compiler */
 __attribute__((section(".NxServerPoolSection")))
 #endif
-static uint8_t nx_server_pool[SERVER_POOL_SIZE];
 
 /* Define FileX global data structures. */
 
@@ -94,12 +109,9 @@ ALIGN_32BYTES (uint32_t DataBuffer[512]);
 /* Private function prototypes -----------------------------------------------*/
 static VOID nx_app_thread_entry (ULONG thread_input);
 /* USER CODE BEGIN PFP */
-/* HTTP server thread entry */
-static void  nx_server_thread_entry(ULONG thread_input);
+static void Tcp_Echo_Thread_Entry(ULONG thread_input);
 static VOID App_Link_Thread_Entry(ULONG thread_input);
-
-/* Server callback when a new request from a client is triggered */
-static UINT webserver_request_notify_callback(NX_WEB_HTTP_SERVER *server_ptr, UINT request_type, CHAR *resource, NX_PACKET *packet_ptr);
+static VOID App_Link_Thread_Entry(ULONG thread_input);
 /* USER CODE END PFP */
 
 /**
@@ -228,98 +240,37 @@ UINT MX_NetXDuo_Init(VOID *memory_ptr)
   }
 
   /* USER CODE BEGIN MX_NetXDuo_Init */
-  printf("Nx_Webserver application started..\n");
+  printf("UART-to-Ethernet Echo application started..\n");
 
-  /* Initialize the NetXDuo system. */
-  nx_system_initialize();
-
-  /* Allocate the server packet pool. */
-  ret = tx_byte_allocate(byte_pool, (VOID **) &pointer, SERVER_POOL_SIZE, TX_NO_WAIT);
-
-  /* Check server packet pool memory allocation. */
-  if (ret != NX_SUCCESS)
-  {
-  	printf("Packet pool memory allocation failed : 0x%02x\n", ret);
-  	Error_Handler();
-  }
-
-  /* Create the server packet pool. */
-  ret = nx_packet_pool_create(&WebServerPool, "HTTP Server Packet Pool", SERVER_PACKET_SIZE, nx_server_pool, SERVER_POOL_SIZE);
-
-  /* Check for server pool creation status. */
-  if (ret != NX_SUCCESS)
-  {
-  	printf("Server pool creation failed : 0x%02x\n", ret);
-  	Error_Handler();
-  }
-
-  /* Allocate the server stack. */
-  ret = tx_byte_allocate(byte_pool, (VOID **) &pointer, SERVER_STACK, TX_NO_WAIT);
-
-  /* Check server stack memory allocation. */
-  if (ret != NX_SUCCESS)
-  {
-  	printf("Server stack memory allocation failed : 0x%02x\n", ret);
-  	Error_Handler();
-  }
-
-  /* Create the HTTP Server. */
-  ret = nx_web_http_server_create(&HTTPServer, "WEB HTTP Server", &NetXDuoEthIpInstance, CONNECTION_PORT,&Flash_Media, pointer,
-                                    SERVER_STACK, &WebServerPool, NX_NULL, webserver_request_notify_callback);
-
-  if (ret != NX_SUCCESS)
-  {
-     printf("HTTP Server creation failed: 0x%02x\n", ret);
-     Error_Handler();
-  }
-
-  /* Allocate the TCP server thread stack. */
+  /* Allocate the TCP Echo thread stack */
   ret = tx_byte_allocate(byte_pool, (VOID **) &pointer, 2 * DEFAULT_MEMORY_SIZE, TX_NO_WAIT);
-
-  /* Check server thread memory allocation. */
-  if (ret != NX_SUCCESS)
+  if (ret != TX_SUCCESS)
   {
-    printf("Server thread memory allocation failed : 0x%02x\n", ret);
-    Error_Handler();
+      printf("TCP Echo thread memory allocation failed: 0x%02x\n", ret);
+      Error_Handler();
   }
 
-  /* create the web server thread */
-  ret = tx_thread_create(&AppServerThread, "App Server Thread", nx_server_thread_entry, 0, pointer, 2 * DEFAULT_MEMORY_SIZE,
+  /* Create the TCP Echo thread */
+  ret = tx_thread_create(&TcpEchoThread, "TCP Echo Thread", Tcp_Echo_Thread_Entry, 0, pointer, 2 * DEFAULT_MEMORY_SIZE,
                          DEFAULT_PRIORITY, DEFAULT_PRIORITY, TX_NO_TIME_SLICE, TX_DONT_START);
-
   if (ret != TX_SUCCESS)
   {
-    return NX_NOT_ENABLED;
+      printf("TCP Echo thread creation failed: 0x%02x\n", ret);
+      Error_Handler();
   }
 
-    /* Allocate the memory for toggle green led thread  */
-  if (tx_byte_allocate(byte_pool, (VOID **) &pointer, DEFAULT_MEMORY_SIZE, TX_NO_WAIT) != TX_SUCCESS)
+  /* Allocate the memory for Link thread */
+  if (tx_byte_allocate(byte_pool, (VOID **) &pointer, 2 * DEFAULT_MEMORY_SIZE, TX_NO_WAIT) != TX_SUCCESS)
   {
-    return TX_POOL_ERROR;
+      return TX_POOL_ERROR;
   }
 
-  /* create the LED control thread */
-  ret = tx_thread_create(&LedThread, "LED control Thread", LedThread_Entry, 0, pointer, DEFAULT_MEMORY_SIZE,
-                         TOGGLE_LED_PRIORITY, TOGGLE_LED_PRIORITY, TX_NO_TIME_SLICE, TX_DONT_START);
-
-  if (ret != TX_SUCCESS)
-  {
-    return NX_NOT_ENABLED;
-  }
-
-  /* Allocate the memory for Link thread   */
-  if (tx_byte_allocate(byte_pool, (VOID **) &pointer,2 *  DEFAULT_MEMORY_SIZE, TX_NO_WAIT) != TX_SUCCESS)
-  {
-    return TX_POOL_ERROR;
-  }
-
-  /* create the Link thread */
+  /* Create the Link thread */
   ret = tx_thread_create(&AppLinkThread, "App Link Thread", App_Link_Thread_Entry, 0, pointer, 2 * DEFAULT_MEMORY_SIZE,
                          LINK_PRIORITY, LINK_PRIORITY, TX_NO_TIME_SLICE, TX_AUTO_START);
-
   if (ret != TX_SUCCESS)
   {
-    return NX_NOT_ENABLED;
+      return NX_NOT_ENABLED;
   }
   /* USER CODE END MX_NetXDuo_Init */
 
@@ -339,241 +290,173 @@ static VOID nx_app_thread_entry (ULONG thread_input)
 
 }
 /* USER CODE BEGIN 2 */
-UINT webserver_request_notify_callback(NX_WEB_HTTP_SERVER *server_ptr, UINT request_type, CHAR *resource, NX_PACKET *packet_ptr)
-{
-
-  CHAR temp_string[30] = {'\0'};
-  CHAR data[512] = {'\0'};
-  UINT string_length;
-  NX_PACKET *resp_packet_ptr;
-  UINT status;
-  ULONG resumptions;
-  ULONG suspensions;
-  ULONG idle_returns;
-  ULONG non_idle_returns;
-  ULONG total_bytes_sent;
-  ULONG total_bytes_received;
-  ULONG connections;
-  ULONG disconnections;
-  ULONG main_thread_count;
-  ULONG server_thread_count;
-  ULONG led_thread_count;
-  CHAR *main_thread_name;
-  CHAR *server_thread_name;
-  CHAR *led_thread_name;
-
-  /*
-  * At each new request we toggle the green led, but in a real use case this callback can serve
-  * to trigger more advanced tasks, like starting background threads or gather system info
-  * and append them into the web page.
-  */
-  /* Get the requested data from packet */
-  if (strcmp(resource, "/GetTXData") == 0)
-  {
-    /* Let HTTP server know the response has been sent. */
-    tx_thread_performance_system_info_get(&resumptions, &suspensions, NULL, NULL, NULL, NULL, NULL, NULL, NULL, &non_idle_returns, &idle_returns);
-
-    sprintf (data, "%lu,%lu,%lu,%lu", resumptions, suspensions, idle_returns, non_idle_returns);
-  }
-  else if (strcmp(resource, "/GetNXData") == 0)
-  {
-    nx_tcp_info_get(&NetXDuoEthIpInstance, NULL, &total_bytes_sent, NULL, &total_bytes_received, NULL,  NULL, NULL, &connections, &disconnections, NULL, NULL);
-    sprintf (data, "%lu,%lu,%lu,%lu",total_bytes_received, total_bytes_sent, connections, disconnections);
-  }
-    else if (strcmp(resource, "/GetNetInfo") == 0)
-  {
-    	sprintf(data, "%lu.%lu.%lu.%lu,%d", (IpAddress >> 24) & 0xff, (IpAddress >> 16) & 0xff, (IpAddress >> 8) & 0xff, IpAddress & 0xff, CONNECTION_PORT);
-  }
-
-    else if (strcmp(resource, "/GetTxCount") == 0)
-  {
-    tx_thread_info_get(&NxAppThread, &main_thread_name, NULL, &main_thread_count, NULL, NULL, NULL, NULL, NULL);
-    tx_thread_info_get(&AppServerThread, &server_thread_name, NULL, &server_thread_count, NULL, NULL, NULL, NULL, NULL);
-    tx_thread_info_get(&LedThread, &led_thread_name, NULL, &led_thread_count, NULL, NULL, NULL, NULL, NULL);
-    sprintf (data, "%s,%lu ,%s,%lu,%s,%lu", main_thread_name, main_thread_count, server_thread_name, server_thread_count,led_thread_name, led_thread_count);
-
-  }
-    else if (strcmp(resource, "/GetNXPacket") == 0)
-  {
-    sprintf (data, "%lu", NxAppPool.nx_packet_pool_available);
-  }
-    else if (strcmp(resource, "/GetNXPacketlen") == 0)
-  {
-    sprintf (data, "%lu", (NxAppPool.nx_packet_pool_available_list)->nx_packet_length );
-  }
-  else if (strcmp(resource, "/LedOn") == 0)
-  {
-    printf(" Toggling Green Led On \n");
-    tx_thread_resume(&LedThread);
-  }
-  else if (strcmp(resource, "/LedOff") == 0)
-  {
-    printf(" Toggling Green Led Off \n");
-    HAL_GPIO_WritePin (LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
-    tx_thread_suspend(&LedThread);
-  }
-  else
-  {
-    return NX_SUCCESS;
-  }
-  /* Derive the client request type from the client request. */
-  nx_web_http_server_type_get(server_ptr, server_ptr -> nx_web_http_server_request_resource, temp_string, &string_length);
-
-  /* Null terminate the string. */
-  temp_string[string_length] = '\0';
-
-  /* Now build a response header with server status is OK and no additional header info. */
-  status = nx_web_http_server_callback_generate_response_header(server_ptr, &resp_packet_ptr, NX_WEB_HTTP_STATUS_OK,
-                                                                strlen(data), temp_string, NX_NULL);
-
-  status = _nxe_packet_data_append(resp_packet_ptr, data, strlen(data), server_ptr->nx_web_http_server_packet_pool_ptr, NX_WAIT_FOREVER);
-  /* Now send the packet! */
-
-  status = nx_web_http_server_callback_packet_send(server_ptr, resp_packet_ptr);
-  if (status != NX_SUCCESS)
-  {
-    nx_packet_release(resp_packet_ptr);
-    return status;
-  }
-  return(NX_WEB_HTTP_CALLBACK_COMPLETED);
-}
-
 /**
-* @brief  Application thread for HTTP web server
-*   thread_input : thread input
-* @retval None
+* @brief  TCP Echo Thread - forwards UART data to TCP client
+* @param  thread_input: ULONG thread parameter
+* @retval none
 */
-
-static NX_WEB_HTTP_SERVER_MIME_MAP app_mime_maps[] =
+static void Tcp_Echo_Thread_Entry(ULONG thread_input)
 {
-  {"css", "text/css"},
-  {"svg", "image/svg+xml"},
-  {"png", "image/png"},
-  {"jpg", "image/jpg"}
-};
+    UINT status;
+    NX_PACKET *packet_ptr;
+    ULONG bytes_read;
 
-void nx_server_thread_entry(ULONG thread_input)
-{
-	/* HTTP WEB SERVER THREAD Entry */
-	  UINT    status;
-	  NX_PARAMETER_NOT_USED(thread_input);
+    NX_PARAMETER_NOT_USED(thread_input);
 
-	  /* Open the levelx_nor driver. */
-	  status = fx_media_open(&Flash_Media, "STM32_SDIO_DISK", fx_stm32_levelx_nor_driver, (VOID *)LX_NOR_SIMULATOR_DRIVER_ID, DataBuffer, sizeof(DataBuffer));
+    printf("TCP Echo Thread started\n");
 
-	  /* Check the media opening status. */
-	  if (status != FX_SUCCESS)
-	  {
-		/*Print Media Opening error. */
-		printf("FX media opening failed : 0x%02x\n", status);
-		/* Error, call error handler.*/
-		Error_Handler();
-	  }
-	  else
-	  {
-		/* Print Media Opening Success. */
-		printf("Fx media successfully opened.\n");
+    /* Create TCP socket */
+    status = nx_tcp_socket_create(&NetXDuoEthIpInstance, &TCPSocket, "TCP Echo Socket",
+                                  NX_IP_NORMAL, NX_FRAGMENT_OKAY, NX_IP_TIME_TO_LIVE, TCP_WINDOW_SIZE,
+                                  NX_NULL, NX_NULL);
+    if (status != NX_SUCCESS)
+    {
+        printf("TCP socket creation failed: 0x%02x\n", status);
+        return;
+    }
 
-		fx_media_space_available(&Flash_Media, &free_bytes);
-	  }
+    /* Bind socket to port */
+    status = nx_tcp_server_socket_listen(&NetXDuoEthIpInstance, TCP_ECHO_PORT, &TCPSocket, 5, NX_NULL);
+    if (status != NX_SUCCESS)
+    {
+        printf("TCP listen failed: 0x%02x\n", status);
+        return;
+    }
 
-	  status = nx_web_http_server_mime_maps_additional_set(&HTTPServer,&app_mime_maps[0], 4);
+    printf("TCP Echo Server listening on port %d\n", TCP_ECHO_PORT);
+    printf("Connect with: telnet 192.168.1.2 %d\n", TCP_ECHO_PORT);
 
-	  /* Start the WEB HTTP Server. */
-	  status = nx_web_http_server_start(&HTTPServer);
+    while (1)
+    {
+        /* Wait for a client connection */
+        printf("Waiting for TCP client connection...\n");
+        status = nx_tcp_server_socket_accept(&TCPSocket, NX_WAIT_FOREVER);
 
-	  /* Check the WEB HTTP Server starting status. */
-	  if (status != NX_SUCCESS)
-	  {
-		/* Print HTTP WEB Server starting error. */
-		printf("HTTP WEB Server Starting Failed, error: 0x%02x\n", status);
-		/* Error, call error handler.*/
-		Error_Handler();
-	  }
-	  else
-	  {
-		/* Print HTTP WEB Server Starting success. */
-		printf("HTTP WEB Server successfully started.\n");
-		/* LED1 On. */
-	  }
-}
+        if (status == NX_SUCCESS)
+        {
+            printf("TCP Client connected!\n");
 
-void LedThread_Entry(ULONG thread_input)
-{
-  (void) thread_input;
-  /* Infinite loop */
-  while (1)
-  {
-    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-    /* Delay for 500ms (App_Delay is used to avoid context change). */
-    tx_thread_sleep(50);
-  }
+            /* Connection established - now echo data */
+            while (1)
+            {
+                /* Check for data from TCP client */
+                status = nx_tcp_socket_receive(&TCPSocket, &packet_ptr, 100);  /* 100 tick timeout */
+                if (status == NX_SUCCESS)
+                {
+
+                    nx_packet_data_retrieve(packet_ptr, echo_buffer, &bytes_read);
+                    echo_buffer[bytes_read] = '\0';
+
+                    printf("TCP->UART: %s", echo_buffer);
+
+                    /* Also send it back to TCP client (echo) */
+                    nx_tcp_socket_send(&TCPSocket, packet_ptr, NX_WAIT_FOREVER);
+                }
+                else if (status == NX_NO_PACKET)
+                {
+                    /* No TCP data, check for UART data */
+                    if (UART_DataAvailable())
+                    {
+                        uint16_t len = UART_GetData(echo_buffer, sizeof(echo_buffer) - 1);
+                        if (len > 0)
+                        {
+                            echo_buffer[len] = '\0';
+                            printf("UART->TCP: %s\n", echo_buffer);
+
+                            /* Allocate packet and send to TCP client */
+                            status = nx_packet_allocate(&NxAppPool, &packet_ptr, NX_TCP_PACKET, NX_WAIT_FOREVER);
+                            if (status == NX_SUCCESS)
+                            {
+                                nx_packet_data_append(packet_ptr, echo_buffer, len, &NxAppPool, NX_WAIT_FOREVER);
+                                status = nx_tcp_socket_send(&TCPSocket, packet_ptr, 100);
+                                if (status != NX_SUCCESS)
+                                {
+                                    nx_packet_release(packet_ptr);
+                                    printf("TCP send failed: 0x%02x\n", status);
+                                }
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    /* Connection error - client disconnected */
+                    printf("TCP Client disconnected (status: 0x%02x)\n", status);
+                    break;
+                }
+
+                tx_thread_sleep(1);  /* Small delay */
+            }
+
+            /* Disconnect and unaccept */
+            nx_tcp_socket_disconnect(&TCPSocket, 100);
+            nx_tcp_server_socket_unaccept(&TCPSocket);
+            nx_tcp_server_socket_relisten(&NetXDuoEthIpInstance, TCP_ECHO_PORT, &TCPSocket);
+        }
+    }
 }
 
 /**
-* @brief  Link thread entry
-*  thread_input: ULONG thread parameter
+* @brief  Link thread entry - monitors Ethernet connection
+* @param  thread_input: ULONG thread parameter
 * @retval none
 */
 static VOID App_Link_Thread_Entry(ULONG thread_input)
 {
-  ULONG actual_status;
-  UINT linkdown = 1;  /* Start assuming link is down */
-  UINT status;
-  UINT server_started = 0;
+    ULONG actual_status;
+    UINT linkdown = 1;  /* Start assuming link is down */
+    UINT status;
+    UINT server_started = 0;
 
-  while(1)
-  {
-    /* Get Physical Link status. */
-    status = nx_ip_interface_status_check(&NetXDuoEthIpInstance, 0, NX_IP_LINK_ENABLED,
-                                      &actual_status, 10);
-
-    if(status == NX_SUCCESS)
+    while(1)
     {
-      if(linkdown == 1)
-      {
-        linkdown = 0;
-        /* The network cable is connected. */
-        printf("The network cable is connected.\n");
+        /* Get Physical Link status */
+        status = nx_ip_interface_status_check(&NetXDuoEthIpInstance, 0, NX_IP_LINK_ENABLED,
+                                              &actual_status, 10);
 
-        /* Send command to Enable Nx driver. */
-        nx_ip_driver_direct_command(&NetXDuoEthIpInstance, NX_LINK_ENABLE, &actual_status);
-
-        /* Set static IP address */
-        IpAddress = IP_ADDRESS(192, 168, 1, 2);
-        NetMask = IP_ADDRESS(255, 255, 255, 0);
-
-        status = nx_ip_address_set(&NetXDuoEthIpInstance, IpAddress, NetMask);
-        if (status == NX_SUCCESS)
+        if(status == NX_SUCCESS)
         {
-          printf("Static IP configured: 192.168.1.2\n");
+            if(linkdown == 1)
+            {
+                linkdown = 0;
+                printf("The network cable is connected.\n");
+
+                /* Send command to Enable Nx driver */
+                nx_ip_driver_direct_command(&NetXDuoEthIpInstance, NX_LINK_ENABLE, &actual_status);
+
+                /* Set static IP address */
+                IpAddress = IP_ADDRESS(192, 168, 1, 2);
+                NetMask = IP_ADDRESS(255, 255, 255, 0);
+
+                status = nx_ip_address_set(&NetXDuoEthIpInstance, IpAddress, NetMask);
+                if (status == NX_SUCCESS)
+                {
+                    printf("Static IP configured: 192.168.1.2\n");
+                }
+                else
+                {
+                    printf("Failed to set IP: 0x%02x\n", status);
+                }
+
+                /* Start the TCP Echo thread only once */
+                if (server_started == 0)
+                {
+                    tx_thread_resume(&TcpEchoThread);
+                    server_started = 1;
+                    printf("TCP Echo server started!\n");
+                }
+            }
         }
         else
         {
-          printf("Failed to set IP: 0x%02x\n", status);
+            if(linkdown == 0)
+            {
+                linkdown = 1;
+                printf("The network cable is not connected.\n");
+            }
         }
 
-        /* Start the server thread only once */
-        if (server_started == 0)
-        {
-          tx_thread_resume(&AppServerThread);
-          tx_thread_resume(&LedThread);
-          server_started = 1;
-          printf("Web server started!\n");
-        }
-      }
+        tx_thread_sleep(NX_APP_CABLE_CONNECTION_CHECK_PERIOD);
     }
-    else
-    {
-      if(linkdown == 0)
-      {
-        linkdown = 1;
-        /* The network cable is not connected. */
-        printf("The network cable is not connected.\n");
-      }
-    }
-
-    tx_thread_sleep(NX_APP_CABLE_CONNECTION_CHECK_PERIOD);
-  }
 }
 /* USER CODE END 2 */
